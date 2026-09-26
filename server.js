@@ -88,6 +88,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/health') {
+    sendJson(res, 200, {
+      ok: true,
+      service: 'AnshinLock Telegram relay',
+      telegramTokenConfigured: Boolean(botToken),
+      telegramChatConfigured: Boolean(chatId)
+    });
+    return;
+  }
+
   if (req.method !== 'POST' || req.url !== '/send-alert') {
     sendJson(res, 404, { sent: false, error: 'Not found.' });
     return;
