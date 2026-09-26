@@ -3,21 +3,30 @@ const http = require('http');
 const port = Number(process.env.PORT || 10000);
 const botToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const chatId = process.env.TELEGRAM_CHAT_ID || '';
-const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
+const allowedOrigins = (process.env.ALLOWED_ORIGIN || '*')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
 const maxBodyBytes = 12 * 1024 * 1024;
 
-function corsHeaders() {
+function corsHeaders(req) {
+  const requestOrigin = req && req.headers.origin;
+  const allowAnyOrigin = allowedOrigins.includes('*');
+  const origin = allowAnyOrigin
+    ? '*'
+    : (allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0] || '*');
+
   return {
-    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Vary': 'Origin'
   };
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(req, res, statusCode, payload) {
   res.writeHead(statusCode, {
-    ...corsHeaders(),
+    ...corsHeaders(req),
     'Content-Type': 'application/json; charset=utf-8'
   });
   res.end(JSON.stringify(payload));
@@ -78,18 +87,18 @@ async function sendTelegram(body) {
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, corsHeaders());
+    res.writeHead(204, corsHeaders(req));
     res.end();
     return;
   }
 
   if (req.method === 'GET' && req.url === '/') {
-    sendJson(res, 200, { ok: true, service: 'AnshinLock Telegram relay' });
+    sendJson(req, res, 200, { ok: true, service: 'AnshinLock Telegram relay' });
     return;
   }
 
   if (req.method === 'GET' && req.url === '/health') {
-    sendJson(res, 200, {
+    sendJson(req, res, 200, {
       ok: true,
       service: 'AnshinLock Telegram relay',
       telegramTokenConfigured: Boolean(botToken),
@@ -99,19 +108,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method !== 'POST' || req.url !== '/send-alert') {
-    sendJson(res, 404, { sent: false, error: 'Not found.' });
+    sendJson(req, res, 404, { sent: false, error: 'Not found.' });
     return;
   }
 
   try {
     const body = JSON.parse(await readBody(req) || '{}');
     const result = await sendTelegram(body);
-    sendJson(res, result.telegram.ok ? 200 : 502, {
-      sent: Boolean(result.telegram.ok),
+    const sent = Boolean(result.telegram.ok);
+    sendJson(req, res, result.telegram.ok ? 200 : 502, {
+      sent,
+      error: sent ? null : (result.telegram.description || 'Telegram rejected the request.'),
       telegram: result.telegram
     });
   } catch (error) {
-    sendJson(res, 500, { sent: false, error: error.message || 'Relay failed.' });
+    sendJson(req, res, 500, { sent: false, error: error.message || 'Relay failed.' });
   }
 });
 
