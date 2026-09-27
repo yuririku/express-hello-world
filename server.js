@@ -7,6 +7,11 @@ const allowedOrigins = (process.env.ALLOWED_ORIGIN || '*')
   .split(',')
   .map(value => value.trim())
   .filter(Boolean);
+const siteCommandKey = process.env.SITE_COMMAND_KEY || '';
+const deviceToken = process.env.ESP32_DEVICE_TOKEN || '';
+let pendingDeviceCommand = null;
+let lastDeviceSeenAt = 0;
+let lastDeviceCommand = null;
 const maxBodyBytes = 12 * 1024 * 1024;
 
 function corsHeaders(req) {
@@ -50,6 +55,14 @@ function readBody(req) {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+function isSiteCommandAuthorized(body) {
+  return !siteCommandKey || body.siteKey === siteCommandKey;
+}
+
+function isDeviceAuthorized(req) {
+  return !deviceToken || req.headers['x-device-token'] === deviceToken;
 }
 
 async function sendTelegram(body) {
@@ -103,6 +116,49 @@ const server = http.createServer(async (req, res) => {
       service: 'AnshinLock Telegram relay',
       telegramTokenConfigured: Boolean(botToken),
       telegramChatConfigured: Boolean(chatId)
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/device/command') {
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const command = String(body.command || '').toUpperCase();
+      if (!isSiteCommandAuthorized(body)) {
+        sendJson(req, res, 401, { success: false, error: 'Unauthorized site command.' });
+        return;
+      }
+      if (command !== 'ALERT' && command !== 'SECURE') {
+        sendJson(req, res, 400, { success: false, error: 'Invalid device command.' });
+        return;
+      }
+      pendingDeviceCommand = command;
+      lastDeviceCommand = command;
+      sendJson(req, res, 200, { success: true, command, message: `${command} command queued for the ESP32.` });
+    } catch (error) {
+      sendJson(req, res, 400, { success: false, error: error.message || 'Invalid command request.' });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/device/poll') {
+    if (!isDeviceAuthorized(req)) {
+      sendJson(req, res, 401, { ok: false, error: 'Unauthorized device.' });
+      return;
+    }
+    lastDeviceSeenAt = Date.now();
+    const command = pendingDeviceCommand;
+    pendingDeviceCommand = null;
+    sendJson(req, res, 200, { ok: true, command: command || 'NONE' });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/device/status') {
+    sendJson(req, res, 200, {
+      ok: true,
+      online: lastDeviceSeenAt > 0 && Date.now() - lastDeviceSeenAt < 30000,
+      lastSeen: lastDeviceSeenAt ? new Date(lastDeviceSeenAt).toISOString() : null,
+      lastCommand: lastDeviceCommand
     });
     return;
   }
